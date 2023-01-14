@@ -1,0 +1,90 @@
+#pragma kernel March
+#include "./Includes/MarchTables.compute"
+
+static const int numThreads = 8;
+
+struct Triangle {
+    float3 vertexC;
+    float3 vertexB;
+    float3 vertexA;
+};
+
+AppendStructuredBuffer<Triangle> triangles;
+RWStructuredBuffer<float4> points;
+
+int numPointsPerAxis;
+float isoLevel;
+bool isInterpolate;
+
+float indexFromCoord(float x, float y, float z) {
+    return x + y * numPointsPerAxis + z * numPointsPerAxis * numPointsPerAxis;
+}
+
+float3 interpolateVerts(float4 vert1, float4 vert2) {
+    if (isInterpolate) {
+        float t = (isoLevel - vert1.w) / (vert2.w - vert1.w);
+        return vert1.xyz + t * (vert2.xyz - vert1.xyz);
+    } else {
+        return (vert1.xyz + vert2.xyz) * 0.5;
+    }
+}
+
+[numthreads(numThreads,numThreads,numThreads)]
+void March (int3 id : SV_DispatchThreadID)
+{
+    // Number of Cubes is reduced by 1 due to overlapping of points
+    int numCubesPerAxis = numPointsPerAxis - 1;
+
+    // Ignore the boundary points for not generating triangle outside
+    if (id.x >= numCubesPerAxis || id.y >= numCubesPerAxis || id.z >= numCubesPerAxis) return;
+
+    // Assign all corners from a current coordinate on the screen
+    float4 cornerCoords[8] = {
+        points[indexFromCoord(id.x, id.y, id.z)],
+        points[indexFromCoord(id.x + 1, id.y, id.z)],
+        points[indexFromCoord(id.x + 1, id.y, id.z + 1)],
+        points[indexFromCoord(id.x, id.y, id.z + 1)],
+        points[indexFromCoord(id.x, id.y + 1, id.z)],
+        points[indexFromCoord(id.x + 1, id.y + 1, id.z)],
+        points[indexFromCoord(id.x + 1, id.y + 1, id.z + 1)],
+        points[indexFromCoord(id.x, id.y + 1, id.z + 1)]
+    };
+
+    /*
+        Calculate unique index for each cube isosurface configuration
+        There are total 256 possible configurations
+        Index of 0 means cube is entirely inside surface and 255 means cube in entirely outside
+        IsoLevel determines isosurface configuration
+    */
+    int cubeIndex = 0;
+    if (cornerCoords[0].w < isoLevel) cubeIndex |= 1;
+    if (cornerCoords[1].w < isoLevel) cubeIndex |= 2;
+    if (cornerCoords[2].w < isoLevel) cubeIndex |= 4;
+    if (cornerCoords[3].w < isoLevel) cubeIndex |= 8;
+    if (cornerCoords[4].w < isoLevel) cubeIndex |= 16;
+    if (cornerCoords[5].w < isoLevel) cubeIndex |= 32;
+    if (cornerCoords[6].w < isoLevel) cubeIndex |= 64;
+    if (cornerCoords[7].w < isoLevel) cubeIndex |= 128;
+
+    /*
+        Create a triangle for this cube configuration
+        Get the corner index for a certain edge index from cornerIndexAFromEdge
+        We get 3 lines of A, B, and C and then put them in a triangle
+    */
+    for (int i = 0; triangulation[cubeIndex][i] != -1; i += 3) {
+        int a0 = cornerIndexAFromEdge[triangulation[cubeIndex][i]];
+        int a1 = cornerIndexBFromEdge[triangulation[cubeIndex][i]];
+
+        int b0 = cornerIndexAFromEdge[triangulation[cubeIndex][i+1]];
+        int b1 = cornerIndexBFromEdge[triangulation[cubeIndex][i+1]];
+
+        int c0 = cornerIndexAFromEdge[triangulation[cubeIndex][i+2]];
+        int c1 = cornerIndexBFromEdge[triangulation[cubeIndex][i+2]];
+
+        Triangle tri;
+        tri.vertexA = interpolateVerts(cornerCoords[a0], cornerCoords[a1]);
+        tri.vertexB = interpolateVerts(cornerCoords[b0], cornerCoords[b1]);
+        tri.vertexC = interpolateVerts(cornerCoords[c0], cornerCoords[c1]);
+        triangles.Append(tri);
+    }
+}
